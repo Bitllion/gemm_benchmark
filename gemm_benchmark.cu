@@ -665,15 +665,7 @@ static void write_json(const std::string &path,
             fprintf(f, "          \"status\": \"%s\"\n", r.ok ? "ok" : "unsupported");
             fprintf(f, "        }%s\n", (i + 1 < gr.results.size()) ? "," : "");
         }
-        fprintf(f, "      ],\n");
-        fprintf(f, "      \"peak_reference_tflops\": {\n");
-        fprintf(f, "        \"FP64\": %.1f,\n", gr.arch.fp64_peak);
-        fprintf(f, "        \"FP32\": %.1f,\n", gr.arch.fp32_peak);
-        fprintf(f, "        \"TF32\": %.1f,\n", gr.arch.tf32_peak);
-        fprintf(f, "        \"FP16\": %.1f,\n", gr.arch.fp16_peak);
-        fprintf(f, "        \"BF16\": %.1f,\n", gr.arch.bf16_peak);
-        fprintf(f, "        \"INT8\": %.1f\n", gr.arch.int8_peak);
-        fprintf(f, "      }\n");
+        fprintf(f, "      ]\n");
         fprintf(f, "    }%s\n", (g + 1 < gpu_results.size()) ? "," : "");
     }
     fprintf(f, "  ]\n");
@@ -955,7 +947,7 @@ int main(int argc, char *argv[]) {
         printf("  CUDA:             %s\n", cuda_ver);
         printf("  Driver:           %s\n", driver_ver);
         if ((int)devices.size() == dev_count) {
-            printf("  检测 GPU:         %d 个 (全部并行测试)\n", dev_count);
+            printf("  检测 GPU:         %d 个 (全部顺序测试)\n", dev_count);
         } else {
             printf("  指定 GPU:         Device %d\n", devices[0]);
         }
@@ -966,55 +958,24 @@ int main(int argc, char *argv[]) {
      *  遍历所有目标 GPU 执行基准测试
      * ============================================================ */
     std::vector<GpuResult> all_results(devices.size());
-    bool multi_gpu = (int)devices.size() > 1;
 
-    if (multi_gpu) {
-        /* ---------- 多 GPU 并行执行 ---------- */
-        if (!cfg.json_output)
-            printf("  开始并行测试 %d 个 GPU...\n\n", (int)devices.size());
-        std::vector<std::thread> threads;
-        std::mutex err_mutex;
-
-        for (size_t i = 0; i < devices.size(); i++) {
-            int dev = devices[i];
-            threads.emplace_back([&, i, dev]() {
-                try {
-                    all_results[i] = run_benchmark_on_device(
-                        dev, cfg.json_output, N, iters, warmup, /*silent=*/true);
-                } catch (...) {
-                    std::lock_guard<std::mutex> lock(err_mutex);
-                    fprintf(stderr, "GPU %d 测试失败, 跳过\n", dev);
-                    GpuResult err_gr;
-                    err_gr.device = dev;
-                    err_gr.name = "ERROR";
-                    all_results[i] = err_gr;
-                }
-            });
+    /* ============================================================
+     *  逐 GPU 顺序执行基准测试
+     * ============================================================ */
+    for (size_t i = 0; i < devices.size(); i++) {
+        if (!cfg.json_output && (int)devices.size() > 1) {
+            printf("\n  ===============  GPU %zu / %zu  ===============\n\n",
+                   i + 1, devices.size());
         }
-        for (auto &t : threads) t.join();
-
-        if (!cfg.json_output) {
-            printf("  所有 GPU 并行测试完成\n");
-            /* ---------- 按 GPU 顺序输出详细结果 ---------- */
-            for (size_t i = 0; i < all_results.size(); i++) {
-                if (all_results[i].name != "ERROR") {
-                    print_device_text_results(all_results[i], N, i + 1, (int)devices.size());
-                }
-            }
-        }
-    } else {
-        /* ---------- 单 GPU 顺序执行 (带输出) ---------- */
-        for (size_t i = 0; i < devices.size(); i++) {
-            try {
-                all_results[i] = run_benchmark_on_device(
-                    devices[i], cfg.json_output, N, iters, warmup, /*silent=*/false);
-            } catch (...) {
-                fprintf(stderr, "GPU %d 测试失败, 跳过\n", devices[i]);
-                GpuResult err_gr;
-                err_gr.device = devices[i];
-                err_gr.name = "ERROR";
-                all_results[i] = err_gr;
-            }
+        try {
+            all_results[i] = run_benchmark_on_device(
+                devices[i], cfg.json_output, N, iters, warmup, /*silent=*/false);
+        } catch (...) {
+            fprintf(stderr, "GPU %d 测试失败, 跳过\n", devices[i]);
+            GpuResult err_gr;
+            err_gr.device = devices[i];
+            err_gr.name = "ERROR";
+            all_results[i] = err_gr;
         }
     }
 
@@ -1044,14 +1005,35 @@ int main(int argc, char *argv[]) {
         printf("  +==========================================================================+\n");
         printf("  |  说明: 所有精度均使用 cuBLASLt + heuristic 算法选择 (top-3 最优)         |\n");
         printf("  |  FP8*: 模拟 (FP8存储+FP16计算)  FP8: 原生 (H100/H200/B200)             |\n");
-        if (!all_results.empty()) {
-            const auto &a = all_results[0].arch;
-            printf("  |  官方 Dense 峰值 (TFLOPS):                                               |\n");
-            printf("  |    FP64=%.1f  FP32=%.1f  TF32=%.0f  FP16=%.0f  BF16=%.0f  INT8=%.0f    |\n",
-                   a.fp64_peak, a.fp32_peak, a.tf32_peak,
-                   a.fp16_peak, a.bf16_peak, a.int8_peak);
-        }
-        printf("  +==========================================================================+\n\n");
+        printf("  +==========================================================================+\n");
+        /* ---------- 主流计算卡官方 Dense 峰值参考 ---------- */
+        printf("\n  官方 Dense 算力峰值参考 (TFLOPS, Tensor Core):\n");
+        printf("  %-12s  %6s  %6s  %6s  %7s  %7s  %6s\n",
+               "GPU", "FP64", "FP32", "TF32", "FP16", "BF16", "INT8");
+        printf("  ----------------------------------------------------------------------------\n");
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "A100 SXM",  19.5,  19.5,  156.0,  312.0,  312.0,  624.0);
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "A800 SXM",  19.5,  19.5,  156.0,  312.0,  312.0,  624.0);
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "H100 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "H800 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "H20",        3.9,   3.9,   74.0,  148.0,  148.0,  296.0);
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "H200 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
+        printf("  %-12s  %6s  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "B200 SXM",  "N/A",  36.0, 2250.0, 4500.0, 4500.0, 9000.0);
+        printf("  %-12s  %6s  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "B300 SXM",  "N/A",  60.0, 3000.0, 6000.0, 6000.0,12000.0);
+        printf("  %-12s  %6s  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "GB200",      "N/A",  40.0, 2500.0, 5000.0, 5000.0,10000.0);
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "L40S",        0.0,  91.6,  183.0,  362.0,  362.0,  733.0);
+        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+               "RTX 4090",    0.0,  82.6,  165.2,  330.3,  330.3,  661.0);
+        printf("\n");
     }
 
     /* ---------- 清理所有设备 ---------- */
