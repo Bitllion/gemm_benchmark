@@ -293,8 +293,12 @@ static void init_double(double *p, size_t n) {
     for (size_t i = 0; i < n; i++) p[i] = (double)rand() / RAND_MAX * 2.0 - 1.0;
 }
 
+/* 所有框线统一为 80 展示宽度 ("  +" + 76个"-" + "+") */
+#define BOX76 "  +----------------------------------------------------------------------------+"
+
 static void print_result(const char *label, int N, double gflops, double ms, int iters) {
-    printf("  %-8s  %5d x %5d  |  %9.1f GFLOPS  (%7.2f TFLOPS)  |  %7.2f ms  (%d iters)\n",
+    /* 整行宽度 80: "  |  TYPE  NNNNNxNNNNN  | GFLOPS (TFLOPS) | ms  i  |" */
+    printf("  |  %-4s  %5dx%5d  | %10.1f GFLOPS (%7.2f TFLOPS) | %7.2fms %3di  |\n",
            label, N, N, gflops, gflops / 1000.0, ms, iters);
 }
 
@@ -606,6 +610,20 @@ static void read_power(const std::string &busId) {
     run_silent(cmd);
 }
 
+static void read_power_to_buf(const std::string &busId, char *buf, size_t bufsz) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "nvidia-smi -i %s --query-gpu=power.draw,power.limit,clocks.sm,temperature.gpu "
+             "--format=csv,noheader 2>/dev/null", busId.c_str());
+    FILE *fp = popen(cmd, "r");
+    if (!fp) { snprintf(buf, bufsz, "N/A"); return; }
+    if (!fgets(buf, (int)bufsz, fp)) buf[0] = '\0';
+    pclose(fp);
+    /* 去掉末尾换行 */
+    size_t n = strlen(buf);
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r' || buf[n-1] == ' ')) buf[--n] = '\0';
+}
+
 /* ================================================================
  *  JSON 输出 (多 GPU)
  * ================================================================ */
@@ -700,20 +718,21 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
 
     /* ---------- 文本模式: GPU 信息头 ---------- */
     if (!json_output && !silent) {
-        printf("  +----------------------------------------------------------------------+\n");
-        printf("  |  GPU %d: %-60s|\n", dev, prop.name);
-        printf("  +----------------------------------------------------------------------+\n");
-        printf("  |  Device Index:     %-49d|\n", dev);
-        printf("  |  PCI Bus ID:       %-49s|\n", gr.pci_bus_id.c_str());
-        printf("  |  Compute Cap:      %-49s|\n",
-               (std::to_string(gr.cc_major) + "." + std::to_string(gr.cc_minor)
-                + (gr.arch.has_fp8 ? " (含 FP8)" : " (无 FP8)")).c_str());
-        printf("  |  SM Count:         %-49d|\n", gr.sm_count);
-        printf("  |  Clock (max):      %-49s|\n",
-               (std::to_string(gr.clock_mhz) + " MHz").c_str());
+        printf("%s\n", BOX76);
+        printf("  |  GPU %d: %-67s|\n", dev, prop.name);
+        printf("%s\n", BOX76);
+        printf("  |  Device Index : %-59d|\n", dev);
+        printf("  |  PCI Bus ID   : %-59s|\n", gr.pci_bus_id.c_str());
+        char cc_buf[32];
+        snprintf(cc_buf, sizeof(cc_buf), "%d.%d%s",
+                 gr.cc_major, gr.cc_minor, gr.arch.has_fp8 ? " (含 FP8)" : " (无 FP8)");
+        printf("  |  Compute Cap  : %-60s|\n", cc_buf);
+        printf("  |  SM Count     : %-59d|\n", gr.sm_count);
+        char clk_buf[32]; snprintf(clk_buf, sizeof(clk_buf), "%d MHz", gr.clock_mhz);
+        printf("  |  Clock (max)  : %-59s|\n", clk_buf);
         char mem_buf[32]; snprintf(mem_buf, sizeof(mem_buf), "%.1f GB", gr.memory_gb);
-        printf("  |  Memory:           %-49s|\n", mem_buf);
-        printf("  +----------------------------------------------------------------------+\n\n");
+        printf("  |  Memory       : %-59s|\n", mem_buf);
+        /* 不闭合底线，等调优完成后继续展示矩阵信息 */
     }
 
     // GPU 调优始终执行 (确保性能正确)
@@ -721,7 +740,7 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
         setup_gpu_performance(gr.pci_bus_id, dev);
 
     if (!json_output && !silent)
-        printf("  [GPU %d 调优] 完成\n\n", dev);
+        printf("  |  [GPU %d 调优] 完成%-57s|\n", dev, "");
 
     /* ---------- 初始化 cuBLASLt ---------- */
     cublasLtHandle_t ltHandle;
@@ -751,12 +770,12 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
     std::vector<BenchResult> &results = gr.results;
 
     if (!json_output && !silent) {
-        printf("  +-------------------------------------------------------------------------+\n");
-        printf("  |  矩阵: %5d x %5d    FLOPs/GEMM: %.3e                               |\n",
-               N, N, gemm_flops(N, N, N));
-        printf("  +-------------------------------------------------------------------------+\n");
-        printf("  %-8s  %-14s  |  %-38s  |  %-12s\n", "Type", "Size", "Performance", "Time");
-        printf("  --------------------------------------------------------------------------------\n");
+        printf("%s\n", BOX76);
+        char flopbuf[32]; snprintf(flopbuf, sizeof(flopbuf), "%.3e", gemm_flops(N, N, N));
+        printf("  |  Matrix: %5dx%-5d  FLOPs/GEMM: %-41s|\n", N, N, flopbuf);
+        printf("%s\n", BOX76);
+        printf("  | Type   Size         |   GFLOPS       (TFLOPS)            |   Time(ms)  iter|\n");
+        printf("%s\n", BOX76);
     }
 
     // FP64
@@ -810,13 +829,16 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
     }
 
     if (!json_output && !silent) {
-        read_power(gr.pci_bus_id);
-        printf("\n");
+        printf("%s\n", BOX76);
+        char pwbuf[128] = "";
+        read_power_to_buf(gr.pci_bus_id, pwbuf, sizeof(pwbuf));
+        printf("  |  功耗实测: %-64s|\n", pwbuf);
     }
 
     /* ---------- 功耗压力测试 ---------- */
     if (!json_output && !silent) {
-        printf("  [功耗压力] FP16 %dx%d GEMM 15 秒...\n", N, N);
+        printf("%s\n", BOX76);
+        printf("  |  压力测试: FP16 %dx%d GEMM 15 秒%-39s|\n", N, N, "");
     }
     if (!json_output) {
         // 功耗压力测试始终运行 (并行模式也测)
@@ -838,10 +860,13 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
         gr.stress_count = count;
         gr.stress_seconds = elapsed;
         if (!silent) {
-            printf("  [功耗压力] %d 次 GEMM, %.1f 秒, 平均 %.2f TFLOPS\n",
-                   count, elapsed, gr.stress_tflops);
-            read_power(gr.pci_bus_id);
-            printf("\n");
+            char resbuf[80], pw2buf[128] = "";
+            snprintf(resbuf, sizeof(resbuf), "%d 次, %.1f 秒, 平均 %.2f TFLOPS",
+                     count, elapsed, gr.stress_tflops);
+            printf("  |  压力结果: %-68s|\n", resbuf);
+            read_power_to_buf(gr.pci_bus_id, pw2buf, sizeof(pw2buf));
+            printf("  |  负载功耗: %-64s|\n", pw2buf);
+            printf("%s\n\n", BOX76);
         }
     }
 
@@ -858,42 +883,57 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
 /* ================================================================
  *  打印单个 GPU 的详细文本结果 (并行测试后顺序输出)
  * ================================================================ */
-static void print_device_text_results(const GpuResult &gr, int N, int gpu_num, int total_gpus) {
-    printf("\n  ===============  GPU %d / %d  ===============\n\n", gpu_num, total_gpus);
-    printf("  +----------------------------------------------------------------------+\n");
-    printf("  |  GPU %d: %-60s|\n", gr.device, gr.name.c_str());
-    printf("  +----------------------------------------------------------------------+\n");
-    printf("  |  Device Index:     %-49d|\n", gr.device);
-    printf("  |  PCI Bus ID:       %-49s|\n", gr.pci_bus_id.c_str());
-    printf("  |  Compute Cap:      %-49s|\n",
-           (std::to_string(gr.cc_major) + "." + std::to_string(gr.cc_minor)
-            + (gr.arch.has_fp8 ? " (含 FP8)" : " (无 FP8)")).c_str());
-    printf("  |  SM Count:         %-49d|\n", gr.sm_count);
-    printf("  |  Clock (max):      %-49s|\n",
-           (std::to_string(gr.clock_mhz) + " MHz").c_str());
-    char mem_buf[32]; snprintf(mem_buf, sizeof(mem_buf), "%.1f GB", gr.memory_gb);
-    printf("  |  Memory:           %-49s|\n", mem_buf);
-    printf("  +----------------------------------------------------------------------+\n\n");
-    printf("  [GPU %d 调优] 完成\n\n", gr.device);
 
-    printf("  +-------------------------------------------------------------------------+\n");
-    printf("  |  矩阵: %5d x %5d    FLOPs/GEMM: %.3e                               |\n",
-           N, N, gemm_flops(N, N, N));
-    printf("  +-------------------------------------------------------------------------+\n");
-    printf("  %-8s  %-14s  |  %-38s  |  %-12s\n", "Type", "Size", "Performance", "Time");
-    printf("  --------------------------------------------------------------------------------\n");
+static void print_device_text_results(const GpuResult &gr, int N, int gpu_num, int total_gpus) {
+    if (total_gpus > 1)
+        printf("\n  ---  GPU %d / %d  ---\n", gpu_num, total_gpus);
+
+    /* ---- GPU 信息框 (76 内宽) ---- */
+    printf("%s\n", BOX76);
+    printf("  |  GPU %d: %-68s|\n", gr.device, gr.name.c_str());
+    printf("%s\n", BOX76);
+
+    std::string cc = std::to_string(gr.cc_major) + "." + std::to_string(gr.cc_minor)
+                     + (gr.arch.has_fp8 ? " (含 FP8)" : " (无 FP8)");
+    char mem_buf[32]; snprintf(mem_buf, sizeof(mem_buf), "%.1f GB", gr.memory_gb);
+    char clk_buf[32]; snprintf(clk_buf, sizeof(clk_buf), "%d MHz", gr.clock_mhz);
+
+    printf("  |  Device Index : %-59d|\n", gr.device);
+    printf("  |  PCI Bus ID   : %-59s|\n", gr.pci_bus_id.c_str());
+    printf("  |  Compute Cap  : %-59s|\n", cc.c_str());
+    printf("  |  SM Count     : %-59d|\n", gr.sm_count);
+    printf("  |  Clock (max)  : %-59s|\n", clk_buf);
+    printf("  |  Memory       : %-59s|\n", mem_buf);
+    /* 不闭合底线，等调优完成后继续展示矩阵信息 */
+    printf("%s\n", BOX76);
+    printf("  |  [GPU %d 调优] 完成%-54s|\n", gr.device, "");
+
+    /* ---- 测试矩阵信息 ---- */
+    printf("%s\n", BOX76);
+    char flopbuf[32]; snprintf(flopbuf, sizeof(flopbuf), "%.3e", gemm_flops(N, N, N));
+    printf("  |  Matrix: %5dx%-5d  FLOPs/GEMM: %-41s|\n", N, N, flopbuf);
+    printf("%s\n", BOX76);
+
+    /* ---- 表头 ---- */
+    printf("  | Type   Size         |   GFLOPS       (TFLOPS)            |   Time(ms)  iter|\n");
+    printf("%s\n", BOX76);
 
     for (const auto &r : gr.results) {
         if (r.ok) {
             print_result(r.type.c_str(), r.N, r.gflops, r.time_ms, r.iters);
         } else {
-            printf("  %-8s  %5d x %5d  |  *** 不支持 ***\n", r.type.c_str(), r.N, r.N);
+            printf("  |  %-4s  %5dx%5d  | *** 不支持 ***%-38s|\n",
+                   r.type.c_str(), r.N, r.N, "");
         }
     }
 
+    printf("%s\n", BOX76);
     if (gr.stress_seconds > 0) {
-        printf("  [功耗压力] %d 次 GEMM, %.1f 秒, 平均 %.2f TFLOPS\n",
-               gr.stress_count, gr.stress_seconds, gr.stress_tflops);
+        char resbuf[80];
+        snprintf(resbuf, sizeof(resbuf), "%d 次, %.1f 秒, 平均 %.2f TFLOPS",
+                 gr.stress_count, gr.stress_seconds, gr.stress_tflops);
+        printf("  |  压力结果: %-61s|\n", resbuf);
+        printf("%s\n", BOX76);
     }
     printf("\n");
 }
@@ -941,9 +981,11 @@ int main(int argc, char *argv[]) {
     /* ---------- 文本头 (非 JSON 模式) ---------- */
     if (!cfg.json_output) {
         printf("\n");
-        printf("  +==========================================================================+\n");
-        printf("  |  NVIDIA GPU GEMM 算力基准测试 — cuBLASLt + 多架构支持                    |\n");
-        printf("  +==========================================================================+\n\n");
+        printf("  +==========================================================================="
+               "=+\n");
+        printf("  |  NVIDIA GPU GEMM 算力基准测试  —  cuBLASLt + 多架构支持                    |\n");
+        printf("  +==========================================================================="
+               "=+\n\n");
         printf("  CUDA:             %s\n", cuda_ver);
         printf("  Driver:           %s\n", driver_ver);
         if ((int)devices.size() == dev_count) {
@@ -987,53 +1029,53 @@ int main(int argc, char *argv[]) {
     } else {
         /* 每 GPU 摘要 */
         printf("\n");
-        printf("  +==========================================================================+\n");
-        printf("  |  测试结果摘要                                                            |\n");
-        printf("  +==========================================================================+\n");
+        printf("  +============================================================================+\n");
+        printf("  |  测试结果摘要                                                              |\n");
+        printf("  +============================================================================+\n");
         for (size_t gi = 0; gi < all_results.size(); gi++) {
             const auto &gr = all_results[gi];
-            printf("  |  GPU %d: %-63s|\n", gr.device, gr.name.c_str());
+            printf("  |  GPU %d: %-67s|\n", gr.device, gr.name.c_str());
             for (const auto &r : gr.results) {
                 if (r.ok) {
-                    printf("  |    %-8s  %9.1f GFLOPS  (%7.2f TFLOPS)                              |\n",
-                           r.type.c_str(), r.gflops, r.tflops);
+                    printf("  |    %-5s  %10.1f GFLOPS (%7.2f TFLOPS)%-31s|\n",
+                           r.type.c_str(), r.gflops, r.tflops, "");
                 }
             }
             if (gi + 1 < all_results.size())
-                printf("  |--------------------------------------------------------------------------|\n");
+                printf("  +----------------------------------------------------------------------------+\n");
         }
-        printf("  +==========================================================================+\n");
-        printf("  |  说明: 所有精度均使用 cuBLASLt + heuristic 算法选择 (top-3 最优)         |\n");
-        printf("  |  FP8*: 模拟 (FP8存储+FP16计算)  FP8: 原生 (H100/H200/B200)             |\n");
-        printf("  +==========================================================================+\n");
+        printf("  +============================================================================+\n");
+        printf("  |  说明: 所有精度均使用 cuBLASLt + heuristic 算法选择 (top-3 最优)           |\n");
+        printf("  |  FP8*: 模拟 (FP8存储+FP16计算)   FP8: 原生 (H100/H200/B200)                |\n");
+        printf("  +============================================================================+\n");
         /* ---------- 主流计算卡官方 Dense 峰值参考 ---------- */
         printf("\n  官方 Dense 算力峰值参考 (TFLOPS, Tensor Core):\n");
-        printf("  %-12s  %6s  %6s  %6s  %7s  %7s  %6s\n",
+        printf("  %-12s  %5s  %5s  %5s  %6s  %6s  %6s\n",
                "GPU", "FP64", "FP32", "TF32", "FP16", "BF16", "INT8");
-        printf("  ----------------------------------------------------------------------------\n");
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  ----------------------------------------------------------\n");
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "A100 SXM",  19.5,  19.5,  156.0,  312.0,  312.0,  624.0);
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "A800 SXM",  19.5,  19.5,  156.0,  312.0,  312.0,  624.0);
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "H100 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "H800 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "H20",        3.9,   3.9,   74.0,  148.0,  148.0,  296.0);
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "H200 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
-        printf("  %-12s  %6s  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5s  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "B200 SXM",  "N/A",  36.0, 2250.0, 4500.0, 4500.0, 9000.0);
-        printf("  %-12s  %6s  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5s  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "B300 SXM",  "N/A",  60.0, 3000.0, 6000.0, 6000.0,12000.0);
-        printf("  %-12s  %6s  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5s  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "GB200",      "N/A",  40.0, 2500.0, 5000.0, 5000.0,10000.0);
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "L40S",        0.0,  91.6,  183.0,  362.0,  362.0,  733.0);
-        printf("  %-12s  %6.1f  %6.1f  %6.0f  %7.0f  %7.0f  %6.0f\n",
+        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
                "RTX 4090",    0.0,  82.6,  165.2,  330.3,  330.3,  661.0);
-        printf("\n");
+        printf("  ----------------------------------------------------------\n\n");
     }
 
     /* ---------- 清理所有设备 ---------- */
