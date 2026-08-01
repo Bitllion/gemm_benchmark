@@ -1,0 +1,92 @@
+{
+  "gpu": {
+    "name": "NVIDIA A100-SXM4-40GB",
+    "compute_capability": "8.0",
+    "sm_count": 108,
+    "memory_gb": 39.4,
+    "clock_max_mhz": 1410,
+    "pci_bus_id": "0000:00:08.0",
+    "cuda_version": "12.4",
+    "driver_version": "12.4",
+    "has_native_fp8": false,
+    "has_tf32": true
+  },
+  "config": {
+    "matrix_size": 8192,
+    "iterations": 20,
+    "warmup": 10
+  },
+  "results": [
+    {
+      "precision": "FP64",
+      "matrix_size": 8192,
+      "gflops": 16483.8,
+      "tflops": 16.48,
+      "time_ms": 66.70,
+      "iterations": 20,
+      "status": "ok"
+    },
+    {
+      "precision": "FP32",
+      "matrix_size": 8192,
+      "gflops": 19183.0,
+      "tflops": 19.18,
+      "time_ms": 57.32,
+      "iterations": 20,
+      "status": "ok"
+    },
+    {
+      "precision": "TF32",
+      "matrix_size": 8192,
+      "gflops": 117520.9,
+      "tflops": 117.52,
+      "time_ms": 9.36,
+      "iterations": 20,
+      "status": "ok"
+    },
+    {
+      "precision": "FP16",
+      "matrix_size": 8192,
+      "gflops": 278944.7,
+      "tflops": 278.94,
+      "time_ms": 3.94,
+      "iterations": 20,
+      "status": "ok"
+    },
+    {
+      "precision": "BF16",
+      "matrix_size": 8192,
+      "gflops": 247041.6,
+      "tflops": 247.04,
+      "time_ms": 4.45,
+      "iterations": 20,
+      "status": "ok"
+    },
+    {
+      "precision": "INT8",
+      "matrix_size": 8192,
+      "gflops": 74228.5,
+      "tflops": 74.23,
+      "time_ms": 14.81,
+      "iterations": 20,
+      "status": "ok"
+    },
+    {
+      "precision": "FP8*",
+      "matrix_size": 8192,
+      "gflops": 2278.0,
+      "tflops": 2.28,
+      "time_ms": 482.67,
+      "iterations": 20,
+      "status": "ok"
+    }
+  ],
+  "peak_reference_tflops": {
+    "FP64": 19.5,
+    "FP32": 19.5,
+    "TF32": 156.0,
+    "FP16": 312.0,
+    "BF16": 312.0,
+    "INT8": 624.0
+  }
+}

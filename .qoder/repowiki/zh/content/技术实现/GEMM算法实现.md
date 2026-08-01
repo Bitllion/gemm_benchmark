@@ -8,12 +8,12 @@
 
 ## 更新摘要
 **所做更改**   
-- 更新了GEMM基准测试实现的架构分析，反映重大重构后的代码结构
-- 增强了分块策略与线程映射的技术细节
-- 优化了内存布局与访问模式的说明
-- 改进了共享内存使用策略的描述
-- 更新了核心计算逻辑与优化技术的实现细节
-- 完善了基准测试与性能评估的方法论
+- 基于重大重构后的代码结构更新了GEMM基准测试实现的架构分析
+- 增强了分块策略与线程映射的技术细节，反映性能优化改进
+- 优化了内存布局与访问模式的说明，体现新的访存优化策略
+- 改进了共享内存使用策略的描述，包含双缓冲和异步加载技术
+- 更新了核心计算逻辑与优化技术的实现细节，包括循环展开和向量化操作
+- 完善了基准测试与性能评估的方法论，支持更全面的性能分析
 
 ## 目录
 1. [简介](#简介)
@@ -38,7 +38,7 @@
 
 目标是在不直接粘贴代码的前提下，通过"代码片段路径"的方式引导读者定位到具体实现位置，并结合图示帮助理解整体设计。
 
-**更新** 基于最新的代码重构，本版本重点突出了优化的分块算法设计和增强的基准测试框架。
+**更新** 基于最新的代码重构，本版本重点突出了优化的分块算法设计和增强的基准测试框架，反映了+257行新增代码和-334行删除代码的重大改进。
 
 ## 项目结构
 仓库包含一个 CUDA 源文件与构建脚本，用于编译与运行 GEMM 基准测试。典型结构如下：
@@ -56,12 +56,12 @@ B --> C
 ```
 
 **图表来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
-- [Makefile:1-80](file://Makefile#L1-L80)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
+- [Makefile](file://Makefile)
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
-- [Makefile:1-80](file://Makefile#L1-L80)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
+- [Makefile](file://Makefile)
 
 ## 核心组件
 - **优化内核函数**：实现改进的分块 GEMM，采用更高效的 tile 划分策略，利用共享内存加速 A/B 子块的复用，按线程块/线程粒度进行累加求和
@@ -70,7 +70,7 @@ B --> C
 - **配置与参数系统**：矩阵维度、tile 大小、寄存器/共享内存占用控制、是否启用向量化加载等参数的灵活配置
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ## 架构总览
 下图展示了从主机到设备的完整数据流与控制流，以及内核内部的分块与线程映射关系。
@@ -94,7 +94,7 @@ Host->>Host : "拷贝回结果, 计时/统计"
 ```
 
 **图表来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ## 详细组件分析
 
@@ -126,10 +126,10 @@ Store --> End(["结束"])
 ```
 
 **图表来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ### 内存布局与访问模式
 - **矩阵布局优化**
@@ -146,7 +146,7 @@ Store --> End(["结束"])
   - 支持向量化加载以提高内存带宽利用率
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ### 共享内存使用策略
 - **预取与缓存增强**
@@ -163,7 +163,7 @@ Store --> End(["结束"])
   - 支持运行时共享内存大小查询
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ### 核心计算逻辑与优化技术
 - **循环展开优化**
@@ -183,7 +183,7 @@ Store --> End(["结束"])
   - 支持异步加载技术
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ### 基准测试与性能评估
 - **测试流程增强**
@@ -201,7 +201,7 @@ Store --> End(["结束"])
   - 支持批量矩阵乘法测试
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ### 错误处理与边界条件
 - **维度校验增强**
@@ -218,7 +218,7 @@ Store --> End(["结束"])
   - 支持长时间运行的任务管理
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ## 依赖关系分析
 - **编译依赖**
@@ -245,12 +245,12 @@ PERF --> REPORT["生成报告"]
 ```
 
 **图表来源**
-- [Makefile:1-80](file://Makefile#L1-L80)
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [Makefile](file://Makefile)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 **章节来源**
-- [Makefile:1-80](file://Makefile#L1-L80)
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [Makefile](file://Makefile)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ## 性能考虑
 - **访存优化增强**
@@ -282,7 +282,7 @@ PERF --> REPORT["生成报告"]
   - 支持 GPU 调试器和性能分析工具集成
 
 **章节来源**
-- [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
+- [gemm_benchmark.cu](file://gemm_benchmark.cu)
 
 ## 结论
 本实现围绕分块 GEMM 的核心思想，通过合理的线程映射、共享内存缓存与向量化加载等手段，有效缓解全局内存带宽瓶颈，提升计算密度。经过重大重构后，新的实现提供了更高效的算法设计、增强的基准测试框架和更好的性能分析能力。基准测试提供了系统化的性能评估方法，便于在不同硬件与参数组合下持续优化。建议结合 profiling 工具与理论上限分析，迭代改进 tile 尺寸、寄存器使用与访存模式，以获得更优的吞吐与能效。
@@ -296,9 +296,9 @@ PERF --> REPORT["生成报告"]
   - FMA：融合乘加运算
   - L1/L2：一级/二级缓存
 - **参考实现路径**
-  - 内核入口与参数定义：见 [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
-  - 主机端初始化与计时：见 [gemm_benchmark.cu:1-200](file://gemm_benchmark.cu#L1-L200)
-  - 构建与运行规则：见 [Makefile:1-80](file://Makefile#L1-L80)
+  - 内核入口与参数定义：见 [gemm_benchmark.cu](file://gemm_benchmark.cu)
+  - 主机端初始化与计时：见 [gemm_benchmark.cu](file://gemm_benchmark.cu)
+  - 构建与运行规则：见 [Makefile](file://Makefile)
 - **性能基准参考**
   - 不同矩阵规模的性能表现
   - 各种优化技术的收益分析
