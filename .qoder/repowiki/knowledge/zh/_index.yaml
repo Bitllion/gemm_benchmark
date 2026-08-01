@@ -1,0 +1,18 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: Q0DeR-MaG1C-BrAnCh-Fo2-NoN-GiT-Or-No-C0MmIt
+nodes_managed: true
+exported_at: "2026-08-01T08:42:03Z"
+modules:
+    "":
+        dir_name: NVIDIA A100 GEMM 多精度算力基准测试
+        title: NVIDIA A100 GEMM 多精度算力基准测试
+        scope:
+            - Makefile
+            - gemm_benchmark.cu
+            - gemm_benchmark
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
