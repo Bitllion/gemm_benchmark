@@ -1,92 +1,180 @@
 {
-  "gpu": {
-    "name": "NVIDIA A100-SXM4-40GB",
-    "compute_capability": "8.0",
-    "sm_count": 108,
-    "memory_gb": 39.4,
-    "clock_max_mhz": 1410,
-    "pci_bus_id": "0000:00:08.0",
-    "cuda_version": "12.4",
-    "driver_version": "12.4",
-    "has_native_fp8": false,
-    "has_tf32": true
-  },
+  "gpu_count": 2,
   "config": {
     "matrix_size": 8192,
     "iterations": 20,
-    "warmup": 10
+    "warmup": 10,
+    "cuda_version": "12.4",
+    "driver_version": "12.4"
   },
-  "results": [
+  "gpus": [
     {
-      "precision": "FP64",
-      "matrix_size": 8192,
-      "gflops": 16483.8,
-      "tflops": 16.48,
-      "time_ms": 66.70,
-      "iterations": 20,
-      "status": "ok"
+      "device_index": 0,
+      "name": "NVIDIA A100-SXM4-40GB",
+      "compute_capability": "8.0",
+      "sm_count": 108,
+      "memory_gb": 39.4,
+      "clock_max_mhz": 1410,
+      "pci_bus_id": "0000:00:08.0",
+      "has_native_fp8": false,
+      "has_tf32": true,
+      "results": [
+        {
+          "precision": "FP64",
+          "matrix_size": 8192,
+          "gflops": 16231.8,
+          "tflops": 16.23,
+          "time_ms": 67.74,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "FP32",
+          "matrix_size": 8192,
+          "gflops": 19182.6,
+          "tflops": 19.18,
+          "time_ms": 57.32,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "TF32",
+          "matrix_size": 8192,
+          "gflops": 114604.6,
+          "tflops": 114.60,
+          "time_ms": 9.59,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "FP16",
+          "matrix_size": 8192,
+          "gflops": 249873.0,
+          "tflops": 249.87,
+          "time_ms": 4.40,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "BF16",
+          "matrix_size": 8192,
+          "gflops": 244040.6,
+          "tflops": 244.04,
+          "time_ms": 4.51,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "INT8",
+          "matrix_size": 8192,
+          "gflops": 72792.8,
+          "tflops": 72.79,
+          "time_ms": 15.10,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "FP8*",
+          "matrix_size": 8192,
+          "gflops": 2277.6,
+          "tflops": 2.28,
+          "time_ms": 482.74,
+          "iterations": 20,
+          "status": "ok"
+        }
+      ],
+      "peak_reference_tflops": {
+        "FP64": 19.5,
+        "FP32": 19.5,
+        "TF32": 156.0,
+        "FP16": 312.0,
+        "BF16": 312.0,
+        "INT8": 624.0
+      }
     },
     {
-      "precision": "FP32",
-      "matrix_size": 8192,
-      "gflops": 19183.0,
-      "tflops": 19.18,
-      "time_ms": 57.32,
-      "iterations": 20,
-      "status": "ok"
-    },
-    {
-      "precision": "TF32",
-      "matrix_size": 8192,
-      "gflops": 117520.9,
-      "tflops": 117.52,
-      "time_ms": 9.36,
-      "iterations": 20,
-      "status": "ok"
-    },
-    {
-      "precision": "FP16",
-      "matrix_size": 8192,
-      "gflops": 278944.7,
-      "tflops": 278.94,
-      "time_ms": 3.94,
-      "iterations": 20,
-      "status": "ok"
-    },
-    {
-      "precision": "BF16",
-      "matrix_size": 8192,
-      "gflops": 247041.6,
-      "tflops": 247.04,
-      "time_ms": 4.45,
-      "iterations": 20,
-      "status": "ok"
-    },
-    {
-      "precision": "INT8",
-      "matrix_size": 8192,
-      "gflops": 74228.5,
-      "tflops": 74.23,
-      "time_ms": 14.81,
-      "iterations": 20,
-      "status": "ok"
-    },
-    {
-      "precision": "FP8*",
-      "matrix_size": 8192,
-      "gflops": 2278.0,
-      "tflops": 2.28,
-      "time_ms": 482.67,
-      "iterations": 20,
-      "status": "ok"
+      "device_index": 1,
+      "name": "NVIDIA A100-SXM4-40GB",
+      "compute_capability": "8.0",
+      "sm_count": 108,
+      "memory_gb": 39.4,
+      "clock_max_mhz": 1410,
+      "pci_bus_id": "0000:00:09.0",
+      "has_native_fp8": false,
+      "has_tf32": true,
+      "results": [
+        {
+          "precision": "FP64",
+          "matrix_size": 8192,
+          "gflops": 16074.2,
+          "tflops": 16.07,
+          "time_ms": 68.40,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "FP32",
+          "matrix_size": 8192,
+          "gflops": 19188.8,
+          "tflops": 19.19,
+          "time_ms": 57.30,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "TF32",
+          "matrix_size": 8192,
+          "gflops": 114519.0,
+          "tflops": 114.52,
+          "time_ms": 9.60,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "FP16",
+          "matrix_size": 8192,
+          "gflops": 245851.0,
+          "tflops": 245.85,
+          "time_ms": 4.47,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "BF16",
+          "matrix_size": 8192,
+          "gflops": 239701.3,
+          "tflops": 239.70,
+          "time_ms": 4.59,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "INT8",
+          "matrix_size": 8192,
+          "gflops": 72020.0,
+          "tflops": 72.02,
+          "time_ms": 15.27,
+          "iterations": 20,
+          "status": "ok"
+        },
+        {
+          "precision": "FP8*",
+          "matrix_size": 8192,
+          "gflops": 2277.8,
+          "tflops": 2.28,
+          "time_ms": 482.72,
+          "iterations": 20,
+          "status": "ok"
+        }
+      ],
+      "peak_reference_tflops": {
+        "FP64": 19.5,
+        "FP32": 19.5,
+        "TF32": 156.0,
+        "FP16": 312.0,
+        "BF16": 312.0,
+        "INT8": 624.0
+      }
     }
-  ],
-  "peak_reference_tflops": {
-    "FP64": 19.5,
-    "FP32": 19.5,
-    "TF32": 156.0,
-    "FP16": 312.0,
-    "BF16": 312.0,
-    "INT8": 624.0
-  }
+  ]
 }

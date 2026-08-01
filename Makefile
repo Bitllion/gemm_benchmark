@@ -76,7 +76,7 @@ help:
 	@echo "    make ARCH=sm_80         # 手动指定"
 	@echo ""
 	@echo "  运行:"
-	@echo "    ./$(TARGET)                           # 默认运行"
+	@echo "    ./$(TARGET)                           # 默认测试所有 GPU"
 	@echo "    ./$(TARGET) -d 1                      # 指定 GPU 1"
 	@echo "    ./$(TARGET) --pci 0000:00:08.0        # 按 PCI 地址"
 	@echo "    ./$(TARGET) --json -o result.json     # JSON 输出"

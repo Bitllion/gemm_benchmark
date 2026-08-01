@@ -5,8 +5,8 @@
  * 精度: FP64 / FP32 / TF32 / FP16 / BF16 / INT8 / FP8(H100+原生)
  *
  * 用法:
- *   ./gemm_benchmark                          # 默认: 设备 0, 文本输出
- *   ./gemm_benchmark --device 1               # 指定 GPU 设备索引
+ *   ./gemm_benchmark                          # 默认: 所有 GPU, 文本输出
+ *   ./gemm_benchmark --device 1               # 指定单个 GPU
  *   ./gemm_benchmark --pci 0000:00:08.0       # 按 PCI Bus ID 选择
  *   ./gemm_benchmark --json                   # 终端输出 JSON
  *   ./gemm_benchmark --json --output r.json   # JSON 写入文件
@@ -88,13 +88,25 @@ struct BenchResult {
     bool ok;
 };
 
+struct GpuResult {
+    int device;
+    std::string name;
+    std::string pci_bus_id;
+    int cc_major, cc_minor;
+    int sm_count;
+    double memory_gb;
+    int clock_mhz;
+    ArchInfo arch;
+    std::vector<BenchResult> results;
+};
+
 /* ================================================================
  *  命令行解析
  * ================================================================ */
 static void print_usage(const char *prog) {
     printf("用法: %s [选项]\n\n", prog);
     printf("选项:\n");
-    printf("  -d, --device <N>          指定 GPU 设备索引 (默认: 0)\n");
+    printf("  -d, --device <N>          指定 GPU 设备索引 (默认: 所有 GPU)\n");
     printf("      --pci <BUS_ID>        按 PCI Bus ID 选择 GPU\n");
     printf("      --json                以 JSON 格式输出结果\n");
     printf("  -o, --output <FILE>       输出文件路径 (配合 --json 使用)\n");
@@ -583,7 +595,7 @@ static void read_power(const std::string &busId) {
 }
 
 /* ================================================================
- *  JSON 输出
+ *  JSON 输出 (多 GPU)
  * ================================================================ */
 static std::string escape_json(const std::string &s) {
     std::string out;
@@ -597,13 +609,9 @@ static std::string escape_json(const std::string &s) {
 }
 
 static void write_json(const std::string &path,
-                       const std::string &gpu_name, int cc_major, int cc_minor,
-                       int sm_count, double memory_gb, int clock_mhz,
                        const std::string &cuda_ver, const std::string &driver_ver,
-                       const std::string &bus_id,
                        int N, int iters, int warmup,
-                       const std::vector<BenchResult> &results,
-                       const ArchInfo &arch) {
+                       const std::vector<GpuResult> &gpu_results) {
     FILE *f = path.empty() ? stdout : fopen(path.c_str(), "w");
     if (!f) {
         fprintf(stderr, "无法打开文件: %s\n", path.c_str());
@@ -611,48 +619,52 @@ static void write_json(const std::string &path,
     }
 
     fprintf(f, "{\n");
-    fprintf(f, "  \"gpu\": {\n");
-    fprintf(f, "    \"name\": \"%s\",\n", escape_json(gpu_name).c_str());
-    fprintf(f, "    \"compute_capability\": \"%d.%d\",\n", cc_major, cc_minor);
-    fprintf(f, "    \"sm_count\": %d,\n", sm_count);
-    fprintf(f, "    \"memory_gb\": %.1f,\n", memory_gb);
-    fprintf(f, "    \"clock_max_mhz\": %d,\n", clock_mhz);
-    fprintf(f, "    \"pci_bus_id\": \"%s\",\n", bus_id.c_str());
-    fprintf(f, "    \"cuda_version\": \"%s\",\n", cuda_ver.c_str());
-    fprintf(f, "    \"driver_version\": \"%s\",\n", driver_ver.c_str());
-    fprintf(f, "    \"has_native_fp8\": %s,\n", arch.has_fp8 ? "true" : "false");
-    fprintf(f, "    \"has_tf32\": %s\n", arch.has_tf32 ? "true" : "false");
-    fprintf(f, "  },\n");
-
+    fprintf(f, "  \"gpu_count\": %d,\n", (int)gpu_results.size());
     fprintf(f, "  \"config\": {\n");
     fprintf(f, "    \"matrix_size\": %d,\n", N);
     fprintf(f, "    \"iterations\": %d,\n", iters);
-    fprintf(f, "    \"warmup\": %d\n", warmup);
+    fprintf(f, "    \"warmup\": %d,\n", warmup);
+    fprintf(f, "    \"cuda_version\": \"%s\",\n", cuda_ver.c_str());
+    fprintf(f, "    \"driver_version\": \"%s\"\n", driver_ver.c_str());
     fprintf(f, "  },\n");
-
-    fprintf(f, "  \"results\": [\n");
-    for (size_t i = 0; i < results.size(); i++) {
-        const auto &r = results[i];
+    fprintf(f, "  \"gpus\": [\n");
+    for (size_t g = 0; g < gpu_results.size(); g++) {
+        const auto &gr = gpu_results[g];
         fprintf(f, "    {\n");
-        fprintf(f, "      \"precision\": \"%s\",\n", r.type.c_str());
-        fprintf(f, "      \"matrix_size\": %d,\n", r.N);
-        fprintf(f, "      \"gflops\": %.1f,\n", r.gflops);
-        fprintf(f, "      \"tflops\": %.2f,\n", r.tflops);
-        fprintf(f, "      \"time_ms\": %.2f,\n", r.time_ms);
-        fprintf(f, "      \"iterations\": %d,\n", r.iters);
-        fprintf(f, "      \"status\": \"%s\"\n", r.ok ? "ok" : "unsupported");
-        fprintf(f, "    }%s\n", (i + 1 < results.size()) ? "," : "");
+        fprintf(f, "      \"device_index\": %d,\n", gr.device);
+        fprintf(f, "      \"name\": \"%s\",\n", escape_json(gr.name).c_str());
+        fprintf(f, "      \"compute_capability\": \"%d.%d\",\n", gr.cc_major, gr.cc_minor);
+        fprintf(f, "      \"sm_count\": %d,\n", gr.sm_count);
+        fprintf(f, "      \"memory_gb\": %.1f,\n", gr.memory_gb);
+        fprintf(f, "      \"clock_max_mhz\": %d,\n", gr.clock_mhz);
+        fprintf(f, "      \"pci_bus_id\": \"%s\",\n", gr.pci_bus_id.c_str());
+        fprintf(f, "      \"has_native_fp8\": %s,\n", gr.arch.has_fp8 ? "true" : "false");
+        fprintf(f, "      \"has_tf32\": %s,\n", gr.arch.has_tf32 ? "true" : "false");
+        fprintf(f, "      \"results\": [\n");
+        for (size_t i = 0; i < gr.results.size(); i++) {
+            const auto &r = gr.results[i];
+            fprintf(f, "        {\n");
+            fprintf(f, "          \"precision\": \"%s\",\n", r.type.c_str());
+            fprintf(f, "          \"matrix_size\": %d,\n", r.N);
+            fprintf(f, "          \"gflops\": %.1f,\n", r.gflops);
+            fprintf(f, "          \"tflops\": %.2f,\n", r.tflops);
+            fprintf(f, "          \"time_ms\": %.2f,\n", r.time_ms);
+            fprintf(f, "          \"iterations\": %d,\n", r.iters);
+            fprintf(f, "          \"status\": \"%s\"\n", r.ok ? "ok" : "unsupported");
+            fprintf(f, "        }%s\n", (i + 1 < gr.results.size()) ? "," : "");
+        }
+        fprintf(f, "      ],\n");
+        fprintf(f, "      \"peak_reference_tflops\": {\n");
+        fprintf(f, "        \"FP64\": %.1f,\n", gr.arch.fp64_peak);
+        fprintf(f, "        \"FP32\": %.1f,\n", gr.arch.fp32_peak);
+        fprintf(f, "        \"TF32\": %.1f,\n", gr.arch.tf32_peak);
+        fprintf(f, "        \"FP16\": %.1f,\n", gr.arch.fp16_peak);
+        fprintf(f, "        \"BF16\": %.1f,\n", gr.arch.bf16_peak);
+        fprintf(f, "        \"INT8\": %.1f\n", gr.arch.int8_peak);
+        fprintf(f, "      }\n");
+        fprintf(f, "    }%s\n", (g + 1 < gpu_results.size()) ? "," : "");
     }
-    fprintf(f, "  ],\n");
-
-    fprintf(f, "  \"peak_reference_tflops\": {\n");
-    fprintf(f, "    \"FP64\": %.1f,\n", arch.fp64_peak);
-    fprintf(f, "    \"FP32\": %.1f,\n", arch.fp32_peak);
-    fprintf(f, "    \"TF32\": %.1f,\n", arch.tf32_peak);
-    fprintf(f, "    \"FP16\": %.1f,\n", arch.fp16_peak);
-    fprintf(f, "    \"BF16\": %.1f,\n", arch.bf16_peak);
-    fprintf(f, "    \"INT8\": %.1f\n", arch.int8_peak);
-    fprintf(f, "  }\n");
+    fprintf(f, "  ]\n");
     fprintf(f, "}\n");
 
     if (!path.empty()) {
@@ -662,58 +674,44 @@ static void write_json(const std::string &path,
 }
 
 /* ================================================================
- *  主函数
+ *  单 GPU 基准测试 (封装为独立函数)
  * ================================================================ */
-int main(int argc, char *argv[]) {
-    /* ---------- 解析参数 ---------- */
-    Config cfg = parse_args(argc, argv);
+static GpuResult run_benchmark_on_device(int dev, bool json_output,
+                                          int N, int iters, int warmup) {
+    GpuResult gr;
+    gr.device = dev;
 
-    /* ---------- 设备选择 ---------- */
-    int dev = select_device(cfg);
+    CUDA_CHECK(cudaSetDevice(dev));
     cudaDeviceProp prop;
     CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
-    std::string busId = get_pci_bus_id(dev);
-    ArchInfo arch = detect_arch(dev);
+    gr.name = prop.name;
+    gr.pci_bus_id = get_pci_bus_id(dev);
+    gr.cc_major = prop.major;
+    gr.cc_minor = prop.minor;
+    gr.sm_count = prop.multiProcessorCount;
+    gr.memory_gb = prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0);
+    gr.clock_mhz = prop.clockRate / 1000;
+    gr.arch = detect_arch(dev);
 
-    /* ---------- 驱动版本 ---------- */
-    int drv_ver = 0;
-    CUDA_CHECK(cudaDriverGetVersion(&drv_ver));
-    char driver_ver[32];
-    snprintf(driver_ver, sizeof(driver_ver), "%d.%d", drv_ver / 1000, (drv_ver % 100) / 10);
-    char cuda_ver[32];
-    snprintf(cuda_ver, sizeof(cuda_ver), "%d.%d",
-             CUDART_VERSION / 1000, (CUDART_VERSION % 1000) / 10);
+    /* ---------- 文本模式: GPU 信息头 ---------- */
+    if (!json_output) {
+        printf("  +----------------------------------------------------------------------+\n");
+        printf("  |  GPU %d: %-60s|\n", dev, prop.name);
+        printf("  +----------------------------------------------------------------------+\n");
+        printf("  |  Device Index:     %-49d|\n", dev);
+        printf("  |  PCI Bus ID:       %-49s|\n", gr.pci_bus_id.c_str());
+        printf("  |  Compute Cap:      %-49s|\n",
+               (std::to_string(gr.cc_major) + "." + std::to_string(gr.cc_minor)
+                + (gr.arch.has_fp8 ? " (含 FP8)" : " (无 FP8)")).c_str());
+        printf("  |  SM Count:         %-49d|\n", gr.sm_count);
+        printf("  |  Clock (max):      %-49s|\n",
+               (std::to_string(gr.clock_mhz) + " MHz").c_str());
+        char mem_buf[32]; snprintf(mem_buf, sizeof(mem_buf), "%.1f GB", gr.memory_gb);
+        printf("  |  Memory:           %-49s|\n", mem_buf);
+        printf("  +----------------------------------------------------------------------+\n\n");
 
-    /* ---------- 文本头 (非 JSON 模式) ---------- */
-    if (!cfg.json_output) {
-        printf("\n");
-        printf("  ╔══════════════════════════════════════════════════════════════════════════╗\n");
-        printf("  ║  NVIDIA GPU GEMM 算力基准测试 — cuBLASLt + 多架构支持                   ║\n");
-        printf("  ╚══════════════════════════════════════════════════════════════════════════╝\n\n");
-        printf("  GPU:              %s\n", prop.name);
-        printf("  Device Index:     %d\n", dev);
-        printf("  PCI Bus ID:       %s\n", busId.c_str());
-        printf("  Compute Cap:      %d.%d (%s)\n", arch.major, arch.minor,
-               arch.has_fp8 ? "含 FP8" : "无 FP8");
-        printf("  SM Count:         %d\n", prop.multiProcessorCount);
-        printf("  Clock (max):      %d MHz\n", prop.clockRate / 1000);
-        printf("  Memory:           %.1f GB\n", prop.totalGlobalMem / (1024.0*1024.0*1024.0));
-        printf("  CUDA:             %s\n", cuda_ver);
-        printf("  Driver:           %s\n", driver_ver);
-        printf("\n");
-
-        setup_gpu_performance(busId, dev);
-
+        setup_gpu_performance(gr.pci_bus_id, dev);
         printf("  [GPU 调优] 完成\n\n");
-    }
-
-    /* ---------- 基准参数 ---------- */
-    const int N = 8192;
-    const int iters = 20;
-    const int warmup = 10;
-
-    if (!cfg.json_output) {
-        printf("  矩阵: %d x %d  |  迭代: %d  |  暖机: %d\n\n", N, N, iters, warmup);
     }
 
     /* ---------- 初始化 cuBLASLt ---------- */
@@ -741,15 +739,15 @@ int main(int argc, char *argv[]) {
     /* ============================================================
      *  逐精度基准测试
      * ============================================================ */
-    std::vector<BenchResult> results;
+    std::vector<BenchResult> &results = gr.results;
 
-    if (!cfg.json_output) {
-        printf("  ┌─────────────────────────────────────────────────────────────────────────┐\n");
-        printf("  │  矩阵: %5d x %5d    FLOPs/GEMM: %.3e                               │\n",
+    if (!json_output) {
+        printf("  +-------------------------------------------------------------------------+\n");
+        printf("  |  矩阵: %5d x %5d    FLOPs/GEMM: %.3e                               |\n",
                N, N, gemm_flops(N, N, N));
-        printf("  └─────────────────────────────────────────────────────────────────────────┘\n");
+        printf("  +-------------------------------------------------------------------------+\n");
         printf("  %-8s  %-14s  |  %-38s  |  %-12s\n", "Type", "Size", "Performance", "Time");
-        printf("  ────────────────────────────────────────────────────────────────────────────────────────\n");
+        printf("  --------------------------------------------------------------------------------\n");
     }
 
     // FP64
@@ -767,7 +765,7 @@ int main(int argc, char *argv[]) {
             &alpha, &beta, d_A, d_B, d_C));
     }
     // TF32
-    if (arch.has_tf32) {
+    if (gr.arch.has_tf32) {
         float alpha = 1.0f, beta = 0.0f;
         results.push_back(bench_gemm("TF32", N, warmup, iters, ltHandle, stream, workspace,
             CUDA_R_32F, CUDA_R_32F, CUDA_R_32F, CUBLAS_COMPUTE_32F_FAST_TF32,
@@ -795,48 +793,24 @@ int main(int argc, char *argv[]) {
             &alpha, &beta, d_A, d_B, d_C));
     }
     // FP8
-    if (arch.has_fp8) {
+    if (gr.arch.has_fp8) {
         results.push_back(bench_fp8_native(N, warmup, iters, ltHandle, stream, workspace,
                                            d_A, d_B, d_C));
     } else {
         results.push_back(bench_fp8_simulated(N, warmup, iters, stream));
     }
 
-    if (!cfg.json_output) {
-        read_power(busId);
+    if (!json_output) {
+        read_power(gr.pci_bus_id);
         printf("\n");
     }
 
     /* ---------- 功耗压力测试 ---------- */
-    if (!cfg.json_output) {
+    if (!json_output) {
         printf("  [功耗压力] FP16 %dx%d GEMM 15 秒...\n", N, N);
         power_stress_test(ltHandle, stream, workspace, d_A, d_B, d_C, N, 15.0);
-        read_power(busId);
+        read_power(gr.pci_bus_id);
         printf("\n");
-    }
-
-    /* ============================================================
-     *  输出结果
-     * ============================================================ */
-    if (cfg.json_output) {
-        double mem_gb = prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0);
-        write_json(cfg.output_file, prop.name, arch.major, arch.minor,
-                   prop.multiProcessorCount, mem_gb, prop.clockRate / 1000,
-                   cuda_ver, driver_ver, busId,
-                   N, iters, warmup, results, arch);
-    } else {
-        /* 文本说明 */
-        printf("  ╔══════════════════════════════════════════════════════════════════════════╗\n");
-        printf("  ║  说明: 所有精度均使用 cuBLASLt + heuristic 算法选择 (top-3 最优)        ║\n");
-        printf("  ║  FP8*: 模拟 (FP8存储+FP16计算)  FP8: 原生 (H100/H200/B200)            ║\n");
-        printf("  ║  官方 Dense 峰值 (TFLOPS):                                              ║\n");
-        char peak_line[256];
-        snprintf(peak_line, sizeof(peak_line),
-                 "  ║    FP64=%.1f  FP32=%.1f  TF32=%.0f  FP16=%.0f  BF16=%.0f  INT8=%.0f",
-                 arch.fp64_peak, arch.fp32_peak, arch.tf32_peak,
-                 arch.fp16_peak, arch.bf16_peak, arch.int8_peak);
-        printf("%s  ║\n", peak_line);
-        printf("  ╚══════════════════════════════════════════════════════════════════════════╝\n\n");
     }
 
     /* ---------- 清理 ---------- */
@@ -844,8 +818,132 @@ int main(int argc, char *argv[]) {
     cudaFree(workspace);
     cudaStreamDestroy(stream);
     cublasLtDestroy(ltHandle);
-    restore_gpu(busId);
-    CUDA_CHECK(cudaDeviceReset());
+    restore_gpu(gr.pci_bus_id);
+
+    return gr;
+}
+
+/* ================================================================
+ *  主函数
+ * ================================================================ */
+int main(int argc, char *argv[]) {
+    /* ---------- 解析参数 ---------- */
+    Config cfg = parse_args(argc, argv);
+
+    /* ---------- 查询可用 GPU 数量 ---------- */
+    int dev_count = 0;
+    CUDA_CHECK(cudaGetDeviceCount(&dev_count));
+    if (dev_count == 0) {
+        fprintf(stderr, "错误: 未检测到可用 GPU 设备\n");
+        return EXIT_FAILURE;
+    }
+
+    /* ---------- 确定测试 GPU 列表 ---------- */
+    std::vector<int> devices;
+    if (cfg.pci_set || cfg.device_set) {
+        int dev = select_device(cfg);
+        devices.push_back(dev);
+    } else {
+        for (int i = 0; i < dev_count; i++) {
+            devices.push_back(i);
+        }
+    }
+
+    /* ---------- 驱动 & CUDA 版本 ---------- */
+    int drv_ver = 0;
+    CUDA_CHECK(cudaDriverGetVersion(&drv_ver));
+    char driver_ver[32];
+    snprintf(driver_ver, sizeof(driver_ver), "%d.%d", drv_ver / 1000, (drv_ver % 100) / 10);
+    char cuda_ver[32];
+    snprintf(cuda_ver, sizeof(cuda_ver), "%d.%d",
+             CUDART_VERSION / 1000, (CUDART_VERSION % 1000) / 10);
+
+    /* ---------- 基准参数 ---------- */
+    const int N = 8192;
+    const int iters = 20;
+    const int warmup = 10;
+
+    /* ---------- 文本头 (非 JSON 模式) ---------- */
+    if (!cfg.json_output) {
+        printf("\n");
+        printf("  +==========================================================================+\n");
+        printf("  |  NVIDIA GPU GEMM 算力基准测试 — cuBLASLt + 多架构支持                    |\n");
+        printf("  +==========================================================================+\n\n");
+        printf("  CUDA:             %s\n", cuda_ver);
+        printf("  Driver:           %s\n", driver_ver);
+        if ((int)devices.size() == dev_count) {
+            printf("  检测 GPU:         %d 个 (全部测试)\n", dev_count);
+        } else {
+            printf("  指定 GPU:         Device %d\n", devices[0]);
+        }
+        printf("  矩阵: %d x %d  |  迭代: %d  |  暖机: %d\n\n", N, N, iters, warmup);
+    }
+
+    /* ============================================================
+     *  遍历所有目标 GPU 执行基准测试
+     * ============================================================ */
+    std::vector<GpuResult> all_results;
+
+    for (int dev : devices) {
+        if (!cfg.json_output && (int)devices.size() > 1) {
+            printf("\n  ===============  GPU %d / %d  ===============\n\n",
+                   dev + 1, (int)devices.size());
+        }
+        try {
+            GpuResult gr = run_benchmark_on_device(dev, cfg.json_output, N, iters, warmup);
+            all_results.push_back(gr);
+        } catch (...) {
+            fprintf(stderr, "GPU %d 测试失败, 跳过\n", dev);
+            GpuResult err_gr;
+            err_gr.device = dev;
+            err_gr.name = "ERROR";
+            err_gr.cc_major = 0; err_gr.cc_minor = 0;
+            err_gr.sm_count = 0; err_gr.memory_gb = 0; err_gr.clock_mhz = 0;
+            all_results.push_back(err_gr);
+        }
+    }
+
+    /* ============================================================
+     *  输出结果
+     * ============================================================ */
+    if (cfg.json_output) {
+        write_json(cfg.output_file, cuda_ver, driver_ver, N, iters, warmup, all_results);
+    } else {
+        /* 每 GPU 摘要 */
+        printf("\n");
+        printf("  +==========================================================================+\n");
+        printf("  |  测试结果摘要                                                            |\n");
+        printf("  +==========================================================================+\n");
+        for (size_t gi = 0; gi < all_results.size(); gi++) {
+            const auto &gr = all_results[gi];
+            printf("  |  GPU %d: %-63s|\n", gr.device, gr.name.c_str());
+            for (const auto &r : gr.results) {
+                if (r.ok) {
+                    printf("  |    %-8s  %9.1f GFLOPS  (%7.2f TFLOPS)                              |\n",
+                           r.type.c_str(), r.gflops, r.tflops);
+                }
+            }
+            if (gi + 1 < all_results.size())
+                printf("  |--------------------------------------------------------------------------|\n");
+        }
+        printf("  +==========================================================================+\n");
+        printf("  |  说明: 所有精度均使用 cuBLASLt + heuristic 算法选择 (top-3 最优)         |\n");
+        printf("  |  FP8*: 模拟 (FP8存储+FP16计算)  FP8: 原生 (H100/H200/B200)             |\n");
+        if (!all_results.empty()) {
+            const auto &a = all_results[0].arch;
+            printf("  |  官方 Dense 峰值 (TFLOPS):                                               |\n");
+            printf("  |    FP64=%.1f  FP32=%.1f  TF32=%.0f  FP16=%.0f  BF16=%.0f  INT8=%.0f    |\n",
+                   a.fp64_peak, a.fp32_peak, a.tf32_peak,
+                   a.fp16_peak, a.bf16_peak, a.int8_peak);
+        }
+        printf("  +==========================================================================+\n\n");
+    }
+
+    /* ---------- 清理所有设备 ---------- */
+    for (int dev : devices) {
+        CUDA_CHECK(cudaSetDevice(dev));
+        CUDA_CHECK(cudaDeviceReset());
+    }
 
     if (!cfg.json_output) printf("  测试完成!\n\n");
     return 0;
