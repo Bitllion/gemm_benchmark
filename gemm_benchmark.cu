@@ -253,32 +253,27 @@ static void setup_gpu_performance(const std::string &busId, int dev) {
     CUDA_CHECK(cudaGetDeviceProperties(&prop, dev));
 
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -pm 1 2>/dev/null", busId.c_str());
+    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -pm 1 >/dev/null 2>&1", busId.c_str());
     run_silent(cmd);
     snprintf(cmd, sizeof(cmd),
-             "nvidia-smi -i %s --lock-gpu-clocks=%d,%d 2>/dev/null",
+             "nvidia-smi -i %s --lock-gpu-clocks=%d,%d >/dev/null 2>&1",
              busId.c_str(), prop.clockRate / 1000, prop.clockRate / 1000);
     run_silent(cmd);
     snprintf(cmd, sizeof(cmd),
-             "nvidia-smi -i %s --applications-clocks=%d,%d 2>/dev/null",
+             "nvidia-smi -i %s --applications-clocks=%d,%d >/dev/null 2>&1",
              busId.c_str(), prop.memoryClockRate / 1000, prop.clockRate / 1000);
     run_silent(cmd);
-    // 设置最大功率限制 (先查询 GPU 支持的上限)
     snprintf(cmd, sizeof(cmd),
-             "nvidia-smi -i %s --query-gpu=power.max_limit --format=csv,noheader,nounits 2>/dev/null",
-             busId.c_str());
-    // 使用 nvidia-smi 默认功率限制 (不设自定义值)
-    snprintf(cmd, sizeof(cmd),
-             "nvidia-smi -i %s -pl 400 2>/dev/null || nvidia-smi -i %s -pl 700 2>/dev/null || true",
+             "nvidia-smi -i %s -pl 400 >/dev/null 2>&1 || nvidia-smi -i %s -pl 700 >/dev/null 2>&1 || true",
              busId.c_str(), busId.c_str());
     run_silent(cmd);
 }
 
 static void restore_gpu(const std::string &busId) {
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -rgc 2>/dev/null", busId.c_str());
+    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -rgc >/dev/null 2>&1", busId.c_str());
     run_silent(cmd);
-    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -rac 2>/dev/null", busId.c_str());
+    snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -rac >/dev/null 2>&1", busId.c_str());
     run_silent(cmd);
 }
 
@@ -1042,7 +1037,7 @@ int main(int argc, char *argv[]) {
                 }
             }
             if (gi + 1 < all_results.size())
-                printf("  +----------------------------------------------------------------------------+\n");
+                printf("  +============================================================================+\n");
         }
         printf("  +============================================================================+\n");
         printf("  |  说明: 所有精度均使用 cuBLASLt + heuristic 算法选择 (top-3 最优)           |\n");
