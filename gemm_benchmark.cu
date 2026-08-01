@@ -10,7 +10,7 @@
  *
  * 精度: FP64 / FP32 / TF32 / FP16 / BF16 / INT8 / FP8(模拟)
  *
- * 用法: ./gemm_benchmark [矩阵大小] [迭代次数]
+ * 用法: ./gemm_benchmark
  */
 
 #include <cstdio>
@@ -392,19 +392,11 @@ static void read_power(const std::string &busId) {
  *  主函数
  * ================================================================ */
 int main(int argc, char *argv[]) {
-    int N_custom = 0;
-    int iters = 20;
-
-    if (argc >= 2 && atoi(argv[1]) > 0) N_custom = atoi(argv[1]);
-    if (argc >= 3 && atoi(argv[2]) > 0) iters = atoi(argv[2]);
-
-    std::vector<int> sizes;
-    if (N_custom > 0) {
-        sizes = {N_custom};
-    } else {
-        sizes = {4096, 8192, 16384};
-    }
-    int warmup = 10;
+    /* ---------- 默认参数 (8192x8192, 20 次迭代, 最优平衡) ---------- */
+    const int N = 8192;
+    const int iters = 20;
+    const int warmup = 10;
+    std::vector<int> sizes = {N};
 
     int dev;
     cudaDeviceProp prop;
@@ -428,9 +420,7 @@ int main(int argc, char *argv[]) {
     setup_gpu_performance(busId, dev);
 
     printf("  基准测试参数:\n");
-    printf("    矩阵尺寸:       ");
-    for (int s : sizes) printf("%d ", s);
-    printf("\n");
+    printf("    矩阵尺寸:       %d x %d\n", N, N);
     printf("    迭代次数:       %d\n", iters);
     printf("    暖机次数:       %d\n", warmup);
     printf("    工作区:         %zu MB\n", WORKSPACE_SIZE / (1024 * 1024));
