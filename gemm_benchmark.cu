@@ -199,7 +199,9 @@ static ArchInfo detect_arch(int dev) {
     info.has_fp8  = (info.major >= 9) || (info.major == 8 && info.minor >= 9);
 
     int sm = prop.multiProcessorCount;
-    double clk = prop.clockRate / 1e6;  // GHz
+    int clk_khz = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&clk_khz, cudaDevAttrClockRate, dev));
+    double clk = clk_khz / 1e6;  // GHz
 
     if (info.major == 8 && info.minor == 0) {
         // A100
@@ -255,25 +257,39 @@ static void setup_gpu_performance(const std::string &busId, int dev) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -pm 1 >/dev/null 2>&1", busId.c_str());
     run_silent(cmd);
+    int clk_mhz = 0, mem_mhz = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&clk_mhz, cudaDevAttrClockRate, dev));
+    CUDA_CHECK(cudaDeviceGetAttribute(&mem_mhz, cudaDevAttrMemoryClockRate, dev));
+    clk_mhz /= 1000;  // kHz -> MHz
+    mem_mhz /= 1000;
     snprintf(cmd, sizeof(cmd),
              "nvidia-smi -i %s --lock-gpu-clocks=%d,%d >/dev/null 2>&1",
-             busId.c_str(), prop.clockRate / 1000, prop.clockRate / 1000);
+             busId.c_str(), clk_mhz, clk_mhz);
     run_silent(cmd);
     snprintf(cmd, sizeof(cmd),
              "nvidia-smi -i %s --applications-clocks=%d,%d >/dev/null 2>&1",
-             busId.c_str(), prop.memoryClockRate / 1000, prop.clockRate / 1000);
+             busId.c_str(), mem_mhz, clk_mhz);
     run_silent(cmd);
+    /* 功耗上限提到该卡最大值。原 -pl 400||700 是 A100/H100 的老值,
+     * 套在 B300 (max 1400W) 上会锁死性能 (~57% 峰值)。 */
     snprintf(cmd, sizeof(cmd),
-             "nvidia-smi -i %s -pl 400 >/dev/null 2>&1 || nvidia-smi -i %s -pl 700 >/dev/null 2>&1 || true",
+             "pl=$(nvidia-smi -i %s --query-gpu=power.max_limit --format=csv,noheader 2>/dev/null | awk '{print int($1)}'); "
+             "[ -n \"$pl\" ] && nvidia-smi -i %s -pl \"$pl\" >/dev/null 2>&1; true",
              busId.c_str(), busId.c_str());
     run_silent(cmd);
 }
 
 static void restore_gpu(const std::string &busId) {
-    char cmd[256];
+    char cmd[512];
     snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -rgc >/dev/null 2>&1", busId.c_str());
     run_silent(cmd);
     snprintf(cmd, sizeof(cmd), "nvidia-smi -i %s -rac >/dev/null 2>&1", busId.c_str());
+    run_silent(cmd);
+    /* 功耗上限恢复默认值 (基准会把上限提到 max, 测完还原, 避免卡在峰值限流) */
+    snprintf(cmd, sizeof(cmd),
+             "pl=$(nvidia-smi -i %s --query-gpu=power.default_limit --format=csv,noheader 2>/dev/null | awk '{print int($1)}'); "
+             "[ -n \"$pl\" ] && nvidia-smi -i %s -pl \"$pl\" >/dev/null 2>&1; true",
+             busId.c_str(), busId.c_str());
     run_silent(cmd);
 }
 
@@ -298,30 +314,58 @@ static void print_result(const char *label, int N, double gflops, double ms, int
 }
 
 /* ================================================================
- *  cuBLASLt GEMM (heuristic 算法选择)
+ *  cuBLASLt GEMM (heuristic 算法选择 + 候选微调)
  * ================================================================ */
+
+/* heuristic 的排名不一定最优 (INT8 实测第 2 个候选快 ~2x), 首次遇到某配置时
+ * 对各候选做 2 次迭代计时选最快, 之后同配置复用 (结果按配置确定性返回) */
+struct TunedAlgo {
+    unsigned long long key = 0;
+    cublasLtMatmulAlgo_t algo{};
+    bool valid = false;
+};
+static TunedAlgo g_tuned_algo;
+
+static unsigned long long algo_key(int dev,
+                                   cudaDataType_t a, cudaDataType_t b, cudaDataType_t c,
+                                   cublasComputeType_t ct, int N)
+{
+    return ((unsigned long long)dev << 56) | ((unsigned long long)a << 44) |
+           ((unsigned long long)b << 32) | ((unsigned long long)c << 20) |
+           ((unsigned long long)ct << 8) | (unsigned)N;
+}
+
 static cublasStatus_t run_cublaslt_gemm(
     cublasLtHandle_t ltHandle, cudaStream_t stream, void *workspace, size_t ws_size,
     int N,
     cudaDataType_t a_type, cudaDataType_t b_type,
     cudaDataType_t c_type, cublasComputeType_t compute_type,
     const void *alpha, const void *beta,
-    const void *d_A, const void *d_B, void *d_C)
+    const void *d_A, const void *d_B, void *d_C,
+    const void *scaleA = nullptr, const void *scaleB = nullptr)
 {
     cublasLtMatmulDesc_t opDesc = nullptr;
     cublasLtMatrixLayout_t Adesc = nullptr, Bdesc = nullptr, Cdesc = nullptr;
     cublasLtMatmulPreference_t pref = nullptr;
-    cublasLtMatmulHeuristicResult_t results[3];
+    cublasLtMatmulHeuristicResult_t results[8];
     int count = 0;
     cublasStatus_t status = CUBLAS_STATUS_SUCCESS;
 
-    status = cublasLtMatmulDescCreate(&opDesc, compute_type, CUDA_R_32F);
+    /* desc 的 scale type 必须与 compute type 匹配 (CUDA 13 强制):
+     * 64F -> CUDA_R_64F, 32I -> CUDA_R_32I (INT8 路径), 其余 -> CUDA_R_32F */
+    cudaDataType_t scale_type = CUDA_R_32F;
+    if (compute_type == CUBLAS_COMPUTE_64F) scale_type = CUDA_R_64F;
+    else if (compute_type == CUBLAS_COMPUTE_32I) scale_type = CUDA_R_32I;
+
+    status = cublasLtMatmulDescCreate(&opDesc, compute_type, scale_type);
     if (status != CUBLAS_STATUS_SUCCESS) goto done;
 
-    if (compute_type == CUBLAS_COMPUTE_64F) {
-        cudaDataType_t st = CUDA_R_64F;
-        cublasLtMatmulDescSetAttribute(opDesc, CUBLASLT_MATMUL_DESC_SCALE_TYPE,
-                                       &st, sizeof(st));
+    /* FP8 输入需显式 scale 指针 (FP32 标量 1.0), 否则 heuristic 无解 */
+    if (scaleA) {
+        cublasLtMatmulDescSetAttribute(opDesc, CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,
+                                       &scaleA, sizeof(scaleA));
+        cublasLtMatmulDescSetAttribute(opDesc, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,
+                                       &scaleB, sizeof(scaleB));
     }
 
     CUBLAS_CHECK(cublasLtMatrixLayoutCreate(&Adesc, a_type, N, N, N));
@@ -334,17 +378,50 @@ static cublasStatus_t run_cublaslt_gemm(
 
     status = cublasLtMatmulAlgoGetHeuristic(
         ltHandle, opDesc, Adesc, Bdesc, Cdesc, Cdesc,
-        pref, 3, results, &count);
+        pref, 8, results, &count);
 
     if (status != CUBLAS_STATUS_SUCCESS || count == 0) {
         status = CUBLAS_STATUS_NOT_SUPPORTED;
         goto done;
     }
 
+    /* 候选微调: 排名不一定最优, 首次按 (dev, 类型, N) 计时选最快 */
+    {
+        int dev = 0;
+        cudaGetDevice(&dev);
+        unsigned long long k = algo_key(dev, a_type, b_type, c_type, compute_type, N);
+        if (!g_tuned_algo.valid || g_tuned_algo.key != k) {
+            cudaStreamSynchronize(stream);
+            cudaEvent_t ev0, ev1;
+            cudaEventCreate(&ev0);
+            cudaEventCreate(&ev1);
+            float best_ms = 1e30f;
+            int best_i = 0;
+            for (int i = 0; i < count; i++) {
+                cudaEventRecord(ev0, stream);
+                for (int t = 0; t < 2; t++)
+                    cublasLtMatmul(ltHandle, opDesc,
+                                   alpha, d_A, Adesc, d_B, Bdesc,
+                                   beta, d_C, Cdesc, d_C, Cdesc,
+                                   &results[i].algo, workspace, ws_size, stream);
+                cudaEventRecord(ev1, stream);
+                cudaEventSynchronize(ev1);
+                float ms = 0;
+                cudaEventElapsedTime(&ms, ev0, ev1);
+                if (ms < best_ms) { best_ms = ms; best_i = i; }
+            }
+            cudaEventDestroy(ev0);
+            cudaEventDestroy(ev1);
+            g_tuned_algo.key = k;
+            g_tuned_algo.algo = results[best_i].algo;
+            g_tuned_algo.valid = true;
+        }
+    }
+
     status = cublasLtMatmul(ltHandle, opDesc,
                             alpha, d_A, Adesc, d_B, Bdesc,
                             beta, d_C, Cdesc, d_C, Cdesc,
-                            &results[0].algo, workspace, ws_size, stream);
+                            &g_tuned_algo.algo, workspace, ws_size, stream);
 
 done:
     if (pref)    cublasLtMatmulPreferenceDestroy(pref);
@@ -423,17 +500,25 @@ static BenchResult bench_fp8_native(
     bool silent = false)
 {
     BenchResult r = {"FP8", N, 0, 0, 0, iters, false};
+    cublasStatus_t st = CUBLAS_STATUS_NOT_SUPPORTED;
 
-#ifdef CUDA_R_8F_E4M3
+    /* CUDA_R_8F_E4M3 是枚举值不是宏, #ifdef 永远为假; 用 CUDART_VERSION 宏判断 */
+#if CUDART_VERSION >= 11000
     float alpha = 1.0f, beta = 0.0f;
 
-    // 尝试 FP8 E4M3 输入, FP16 输出, FP16 计算
-    cublasStatus_t st = CUBLAS_STATUS_NOT_SUPPORTED;
+    /* FP8 输入必须提供 scale 指针 (FP32 标量 1.0) */
+    float *d_scale = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_scale, 2 * sizeof(float)));
+    float h_scale[2] = {1.0f, 1.0f};
+    CUDA_CHECK(cudaMemcpy(d_scale, h_scale, 2 * sizeof(float), cudaMemcpyHostToDevice));
+
+    // FP8 E4M3 输入, FP32 输出, FP32 累加 (CUDA 13: FP8 不能配 CUBLAS_COMPUTE_16F)
     for (int w = 0; w < warmup; w++) {
         st = run_cublaslt_gemm(ltHandle, stream, workspace, WORKSPACE_SIZE,
                                N, CUDA_R_8F_E4M3, CUDA_R_8F_E4M3,
-                               CUDA_R_16F, CUBLAS_COMPUTE_16F,
-                               &alpha, &beta, d_A, d_B, d_C);
+                               CUDA_R_32F, CUBLAS_COMPUTE_32F,
+                               &alpha, &beta, d_A, d_B, d_C,
+                               d_scale, d_scale + 1);
         if (st != CUBLAS_STATUS_SUCCESS) break;
     }
 
@@ -446,8 +531,9 @@ static BenchResult bench_fp8_native(
         for (int i = 0; i < iters; i++) {
             run_cublaslt_gemm(ltHandle, stream, workspace, WORKSPACE_SIZE,
                               N, CUDA_R_8F_E4M3, CUDA_R_8F_E4M3,
-                              CUDA_R_16F, CUBLAS_COMPUTE_16F,
-                              &alpha, &beta, d_A, d_B, d_C);
+                              CUDA_R_32F, CUBLAS_COMPUTE_32F,
+                              &alpha, &beta, d_A, d_B, d_C,
+                              d_scale, d_scale + 1);
         }
         CUDA_CHECK(cudaEventRecord(stop, stream));
         CUDA_CHECK(cudaEventSynchronize(stop));
@@ -463,12 +549,14 @@ static BenchResult bench_fp8_native(
             print_result("FP8", N, r.gflops, avg_ms, iters);
         CUDA_CHECK(cudaEventDestroy(start));
         CUDA_CHECK(cudaEventDestroy(stop));
+        CUDA_CHECK(cudaFree(d_scale));
         return r;
     }
+    CUDA_CHECK(cudaFree(d_scale));
 #endif
     // Fallback: 不支持原生 FP8
     if (!silent)
-        printf("  %-8s  %5d x %5d  |  *** cuBLASLt 原生 FP8 不可用 ***\n", "FP8", N, N);
+        printf("  %-8s  %5d x %5d  |  *** cuBLASLt 原生 FP8 不可用 (status=%d) ***\n", "FP8", N, N, (int)st);
     return r;
 }
 
@@ -708,7 +796,9 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
     gr.cc_minor = prop.minor;
     gr.sm_count = prop.multiProcessorCount;
     gr.memory_gb = prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0);
-    gr.clock_mhz = prop.clockRate / 1000;
+    int clk_khz = 0;
+    CUDA_CHECK(cudaDeviceGetAttribute(&clk_khz, cudaDevAttrClockRate, dev));
+    gr.clock_mhz = clk_khz / 1000;
     gr.arch = detect_arch(dev);
 
     /* ---------- 文本模式: GPU 信息头 ---------- */
@@ -808,9 +898,9 @@ static GpuResult run_benchmark_on_device(int dev, bool json_output,
             CUDA_R_16BF, CUDA_R_16BF, CUDA_R_16BF, CUBLAS_COMPUTE_32F,
             &alpha, &beta, d_A, d_B, d_C, silent));
     }
-    // INT8
+    // INT8 (CUBLAS_COMPUTE_32I 要求 int32 alpha/beta + scale type 32I)
     {
-        float alpha = 1.0f, beta = 0.0f;
+        int32_t alpha = 1, beta = 0;
         results.push_back(bench_gemm("INT8", N, warmup, iters, ltHandle, stream, workspace,
             CUDA_R_8I, CUDA_R_8I, CUDA_R_32I, CUBLAS_COMPUTE_32I,
             &alpha, &beta, d_A, d_B, d_C, silent));
@@ -960,10 +1050,18 @@ int main(int argc, char *argv[]) {
     }
 
     /* ---------- 驱动 & CUDA 版本 ---------- */
-    int drv_ver = 0;
-    CUDA_CHECK(cudaDriverGetVersion(&drv_ver));
-    char driver_ver[32];
-    snprintf(driver_ver, sizeof(driver_ver), "%d.%d", drv_ver / 1000, (drv_ver % 100) / 10);
+    /* R610 起 cudaDriverGetVersion() 返回 CUDA UMD 版本(如 13.3)而非驱动版本号;
+     * 真实驱动版本从 nvidia-smi driver_version 字段取(如 610.43.02) */
+    char driver_ver[32] = "unknown";
+    FILE *fp = popen("nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1", "r");
+    if (fp) {
+        if (!fgets(driver_ver, sizeof(driver_ver), fp))
+            snprintf(driver_ver, sizeof(driver_ver), "unknown");
+        pclose(fp);
+        size_t n = strlen(driver_ver);
+        while (n > 0 && (driver_ver[n-1] == '\n' || driver_ver[n-1] == '\r' || driver_ver[n-1] == ' '))
+            driver_ver[--n] = '\0';
+    }
     char cuda_ver[32];
     snprintf(cuda_ver, sizeof(cuda_ver), "%d.%d",
              CUDART_VERSION / 1000, (CUDART_VERSION % 1000) / 10);
@@ -1043,34 +1141,6 @@ int main(int argc, char *argv[]) {
         printf("  |  说明: 所有精度均使用 cuBLASLt + heuristic 算法选择 (top-3 最优)           |\n");
         printf("  |  FP8*: 模拟 (FP8存储+FP16计算)   FP8: 原生 (H100/H200/B200)                |\n");
         printf("  +============================================================================+\n");
-        /* ---------- 主流计算卡官方 Dense 峰值参考 ---------- */
-        printf("\n  官方 Dense 算力峰值参考 (TFLOPS, Tensor Core):\n");
-        printf("  %-12s  %5s  %5s  %5s  %6s  %6s  %6s\n",
-               "GPU", "FP64", "FP32", "TF32", "FP16", "BF16", "INT8");
-        printf("  ----------------------------------------------------------\n");
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "A100 SXM",  19.5,  19.5,  156.0,  312.0,  312.0,  624.0);
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "A800 SXM",  19.5,  19.5,  156.0,  312.0,  312.0,  624.0);
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "H100 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "H800 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "H20",        3.9,   3.9,   74.0,  148.0,  148.0,  296.0);
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "H200 SXM",  33.5,  66.9,  989.0, 1979.0, 1979.0, 3958.0);
-        printf("  %-12s  %5s  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "B200 SXM",  "N/A",  36.0, 2250.0, 4500.0, 4500.0, 9000.0);
-        printf("  %-12s  %5s  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "B300 SXM",  "N/A",  60.0, 3000.0, 6000.0, 6000.0,12000.0);
-        printf("  %-12s  %5s  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "GB200",      "N/A",  40.0, 2500.0, 5000.0, 5000.0,10000.0);
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "L40S",        0.0,  91.6,  183.0,  362.0,  362.0,  733.0);
-        printf("  %-12s  %5.1f  %5.1f  %5.0f  %6.0f  %6.0f  %6.0f\n",
-               "RTX 4090",    0.0,  82.6,  165.2,  330.3,  330.3,  661.0);
-        printf("  ----------------------------------------------------------\n\n");
     }
 
     /* ---------- 清理所有设备 ---------- */

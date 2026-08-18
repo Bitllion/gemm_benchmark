@@ -3,9 +3,15 @@
 # ============================================================
 
 CUDA_PATH   ?= /usr/local/cuda
+UNAME_M     := $(shell uname -m)
+ifeq ($(UNAME_M),aarch64)
+  CUDA_TGT   = sbsa-linux
+else
+  CUDA_TGT   = x86_64-linux
+endif
 NVCC         = $(CUDA_PATH)/bin/nvcc
 NVCC_FLAGS   = -O3 -std=c++17 --use_fast_math -diag-suppress 177,1650
-LDFLAGS      = -lcublasLt -lcublas -lpthread -Xlinker -rpath,$(CUDA_PATH)/targets/x86_64-linux/lib
+LDFLAGS      = -lcublasLt -lcublas -lpthread -Xlinker -rpath,$(CUDA_PATH)/targets/$(CUDA_TGT)/lib
 
 TARGET       = gemm_benchmark
 SRC          = gemm_benchmark.cu
